@@ -688,12 +688,49 @@ public:
 	 *
 	 * you may simply return state() if no valid move
 	 */
-	state select_best_move(const board& b) const {
+	/* after state */
+	state select_best_move_afterstate(const board& b) const {
 		state after[4] = { 0, 1, 2, 3 }; // up, right, down, left
 		state* best = after;
 		for (state* move = after; move != after + 4; move++) {
 			if (move->assign(b)) {
 				move->set_value(move->reward() + estimate(move->after_state()));
+				if (move->value() > best->value())
+					best = move;
+			} else {
+				move->set_value(-std::numeric_limits<float>::max());
+			}
+			debug << "test " << *move;
+		}
+		return *best;
+	}
+
+	/* before state */
+	state select_best_move_beforestate(const board& b) const {
+		state after[4] = { 0, 1, 2, 3 }; // up, right, down, left
+		state* best = after;
+		
+		for (state* move = after; move != after + 4; move++) {
+			if (move->assign(b)) {
+				board ori_state = move->after_state();
+				board tmp_state = ori_state;
+				float estimate_2 = 0.0;
+				float estimate_4 = 0.0;
+				int count = 0;
+				for (int i = 0; i < 16; i++){
+					if (tmp_state.at(i) == 0) {
+						tmp_state.set(i, 2);
+						estimate_4 += estimate(tmp_state);
+						tmp_state = ori_state;
+						tmp_state.set(i, 1);
+						estimate_2 += estimate(tmp_state);
+						tmp_state = ori_state;
+						++count;
+					}
+				}
+				float total_estimate = 0.1*(estimate_4/count) + 0.9*(estimate_2/count);
+				move->set_value(move->reward() + total_estimate);
+
 				if (move->value() > best->value())
 					best = move;
 			} else {
@@ -718,13 +755,25 @@ public:
 	 *  { (s0,s0',a0,r0), (s1,s1',a1,r1), (s2,s2,x,-1) }
 	 *  where (x,x,x,x) means (before state, after state, action, reward)
 	 */
-	void update_episode(std::vector<state>& path, float alpha = 0.1) const {
+	/* after state */
+	void update_episode_afterstate(std::vector<state>& path, float alpha = 0.1) const {
 		float exact = 0;
 		for (path.pop_back() /* terminal state */; path.size(); path.pop_back()) {
 			state& move = path.back();
 			float error = exact - (move.value() - move.reward());
 			debug << "update error = " << error << " for after state" << std::endl << move.after_state();
 			exact = move.reward() + update(move.after_state(), alpha * error);
+		}
+	}
+	/* before state */
+	void update_episode_beforestate(std::vector<state>& path, float alpha = 0.1) const {
+		float exact = 0;
+		path.back().set_reward(0);
+		for (; path.size(); path.pop_back()) {
+			state& move = path.back();
+			float error = exact - estimate(move.before_state()) + move.reward();
+			debug << "update error = " << error << " for before state" << std::endl << move.before_state();
+			exact = update(move.before_state(), alpha * error);
 		}
 	}
 
@@ -747,13 +796,13 @@ public:
 	 *  '93.7%': 93.7% (937 games) reached 8192-tiles in last 1000 games (a.k.a. win rate of 8192-tile)
 	 *  '22.4%': 22.4% (224 games) terminated with 8192-tiles (the largest) in last 1000 games
 	 */
-	void make_statistic(size_t n, const board& b, int score, int unit = 1000) {
+	float make_statistic(size_t n, const board& b, int score, int unit = 1000) {
 		scores.push_back(score);
 		maxtile.push_back(0);
 		for (int i = 0; i < 16; i++) {
 			maxtile.back() = std::max(maxtile.back(), b.at(i));
 		}
-
+		float res = 0.0;
 		if (n % unit == 0) { // show the training process
 			if (scores.size() != size_t(unit) || maxtile.size() != size_t(unit)) {
 				error << "wrong statistic size for show statistics" << std::endl;
@@ -779,7 +828,9 @@ public:
 			}
 			scores.clear();
 			maxtile.clear();
+			res = mean;
 		}
+		return res;
 	}
 
 	/**
@@ -840,9 +891,12 @@ private:
 };
 
 int main(int argc, const char* argv[]) {
-	info << "TDL2048-Demo" << std::endl;
+	info << "My TDL2048" << std::endl;
 	learning tdl;
 
+	std::string csv_filename = "rewardlog_afterstate.csv";
+	std::string pth_filename = "model_afterstate.pth";
+	int show_unit = 1000;
 	// set the learning parameters
 	float alpha = 0.1;
 	size_t total = 100000;
@@ -860,7 +914,18 @@ int main(int argc, const char* argv[]) {
 	tdl.add_feature(new pattern({ 4, 5, 6, 8, 9, 10 }));
 
 	// restore the model from file
-	tdl.load("");
+	if (argc > 2) {
+		std::string opt = argv[1];
+		if (opt.compare("load") == 0){
+			std::string pth = argv[2];
+			info << "[*] loading files: "<< pth << std::endl;
+			tdl.load(pth);
+		} else {
+			info << "undefined arg: " << argv[1] << std::endl;
+		}
+	}
+	std::fstream rewardlog;
+	rewardlog.open(csv_filename, std::ios::out);
 
 	// train the model
 	std::vector<state> path;
@@ -874,7 +939,8 @@ int main(int argc, const char* argv[]) {
 		b.init();
 		while (true) {
 			debug << "state" << std::endl << b;
-			state best = tdl.select_best_move(b);
+			// state best = tdl.select_best_move_beforestate(b);
+			state best = tdl.select_best_move_afterstate(b);
 			path.push_back(best);
 
 			if (best.is_valid()) {
@@ -889,13 +955,18 @@ int main(int argc, const char* argv[]) {
 		debug << "end episode" << std::endl;
 
 		// update by TD(0)
-		tdl.update_episode(path, alpha);
-		tdl.make_statistic(n, b, score);
+		// tdl.update_episode_beforestate(path, alpha);
+		tdl.update_episode_afterstate(path, alpha);
+		float mean = tdl.make_statistic(n, b, score, show_unit);
 		path.clear();
+
+		if(n % show_unit == 0)
+			rewardlog << n << "," << mean << std::endl;
 	}
 
 	// store the model into file
-	tdl.save("");
+	tdl.save(pth_filename);
+	rewardlog.close();
 
 	return 0;
 }
