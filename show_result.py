@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 def show_result(res):
+    res = res.reset_index(drop=True)
+    res = res.reindex(list(range(res.shape[0])))
     plot = res.plot(title='2048 average score')
     plot.set_xlabel("per 1000")
     plot.set_ylabel("avg score")
